@@ -32,17 +32,21 @@ broken down:
 Pump
 ====
 
+```
 02 4d 40 00 3c	pump fixed 60%
 02 4d 40 00 46	pump fixed 70%
 02 4d 40 00 64	pump fixed 100%
 02 4d 40 00 4c	pump silent
+```
 
 Fans
 ====
 
+```
 02 4d 00 00 19	fans fixed 25%
 02 4d 00 00 1e	fans fixed 30%
 02 4d 00 00 64	fans fixed 100%
+```
 
 Light Examples
 ==============
