@@ -3,13 +3,18 @@
 VID: 1e71
 PID: 170e
 
+CAM seems to only use the term "KrakenX", never distinguishing X62.
+Can assume that all Kraken devices are exactly the same in terms of fw and sw
+
 ### Status messages
 
-The reply to a `0x01 0x57` command sent by CAM at startup is this:
+
+Serial number:
 ```
-04 48 0a 25 bf 15 a4 5a
+send: 01 57
+recv: 04 nn nn nn nn nn nn nn
 ```
-I have no idea what this means.
+This is the serial number in hex, in reverse order.
 
 
 At regular intervals (4Hz if no commands are being sent, up to around 17Hz
@@ -23,7 +28,7 @@ which looks like this:
 broken down:
 
 ```
-00 04
+00 04 status message
 01 26 temp. 26 = 42, 27 = 43, 2a=46 = liquid temp in c - 4 degs
 02 08 temp decimal (0-9)
 03 02 fan rpm msb
@@ -33,11 +38,11 @@ broken down:
 07 00
 08 00
 09 00
-10 ab
-11 02
-12 00
-13 01
-14 08
+10 ab "DeviceNumber" in CAM
+11 02 FW ver 1
+12 00 FW ver 2
+13 01 FW ver 3
+14 08 FW ver 4
 15 1e - 00 at usb init. Initial lighting?
 16 00
 ```
@@ -85,7 +90,7 @@ them all)
 | 0 | Fixed            | Both | 1   |
 | 1 | Fading           | Ring |     |
 | 2 | Spectrum wave    | Both | 0   |
-| 3 | Marquee          | Ring | 1-n |
+| 3 | Marquee          | Ring | 1-n | can have led group size=3 in json
 | 4 | Covering marquee | Ring | 1-n |
 | 5 | Alternating wave | Ring | 2   | Can use device 0xa
 | 6 | Breathing        | Both | 1-n |
@@ -132,13 +137,63 @@ Commands beginning `0x8n` appear to be status requests
 
 ## Hue+
 
-Communication appears to be at 256kbps (256000 bps, not base2)
+Communication is at 256kbps
+
+
 
 ### Status response
 
 The Hue+ responds to `0xc0`with `0x01`
 Successful commands return `0x01`
 Failed commands return `0x02`
+
+
+### Querying
+
+CAM\LastUploadData.json gives:
+* StripeCountsInChannel ("AAIC" - what?)
+
+device id 54424
+current fw "V4.3.2"
+
+```
+send: 8d 01
+recv: c0 d4 98 00 02
+
+send: 8d 02
+recv: c0 d4 98 00 02
+```
+
+```
+send: 8c 00
+recv: c4 00 03 02 56 (fw 4.3.2)
+      c4 00 02 05 56 (also seen, old fw)
+```
+
+
+### Setting
+My colour is RGB 08 12 17
+
+n = channel, 1, 2 or 0 for both
+
+Fixed
+```
+4b 0n 00 00 00 [gg rr bb] * 40
+```
+Doing n=0, only 20 LEDs used, so to do a colour per strip:
+```
+4b 01 00 00 00 [g1 r1 b1]*10 [g2 r2 b2]*10 [00 00 00]*20
+4b 02 00 00 00 [g3 r3 b3]*10 [g4 r4 b4]*10 [00 00 00]*20
+```
+Speed is just 9.6 commands per second!
+
+
+Hue+ LED. Strange! Only 0x00 and 0xff appear to work
+```
+46 00 c0 00 00 00 ff - On
+46 00 c0 00 00 ff 00 - Off
+```
+
 
 ### Firmware update
 
@@ -148,17 +203,29 @@ Send the `0x4c` command and receive an `0x01` ack. The LED will blink 1Hz.
 Now send the firmware file in 128 byte chunks each preceded by `0xaa`.
 Receive an `0x01` response to each chunk.
 Zero pad the last chunk.
-CAM takes 211s to deliver a 47KB firmware file, the delay is waiting for the acks.
+CAM takes 211s to deliver a 47KB firmware file, the delay is waiting for the
+acks.
 
 Send the `0x50` command and wait a few minutes for a `0x03` response. Presumably
 this reads the file you've just sent and copies it to somewhere non-volatile.
 
 
-## Grid
+## Grid+ v2
 
-The grid really is a pile of crap. It can't keep some fans running below
+Research shows the Grid+ and Grid+ V2 are very different on a hardware level,
+although they both use an MCP2200 MCU for USB/serial comms.
+
+The grid+ v2 really is a pile of crap. It can't keep some fans running below
 around 60% without constantly spinning them up and down. It also appears
 there is no way to set speeds under what it thinks is 450rpm!
+
+Hardware-wise, I haven't opened mine yet, but from images found on the net,
+it's an MCP2200 in front of a pair of STM8S5K6 MCUs. Why a pair of CPUs?
+Each has 3 timers which are obviously used for PWM.
+
+It is entirely possible that the Grid+ v2 can be turned into something decent
+with some replacement firmware. How practical this is will depend on a sniff
+of comms between the chips. TBA.
 
 Communication appears to be at 4800bps, or maybe slightly off that since
 comms seems unreliable
@@ -171,14 +238,24 @@ Failed commands return `0x02`
 
 #### Querying
 
+Hmm. CAM\LastUploadData.json gives:
+* ChannelDCVoltage (e.g. 11.59v)
+* ChannelFanNotification (all false)
+* DCAmpere (e.g. 0.04)
+* IsChannelConnected (bool)
+* RPM (e.g. 780, or 11220 for something <450rpm)
+* RPMNotifyLowerLimit
+* SetFanSpeedPercentOfChannel (e.g. 50)
+* Watt (e.g. 0.1832)
+
 n = channel number
 
 ```
 send: 84 0n           - get current pwm output (0-2910)
 recv: c0 00 00 0b 5c  - 2908
 
-send: 85 0n           - get current power draw (watts)
-recv: c0 00 00 00 18  - 2.4W
+send: 85 0n           - get current power draw (amps)
+recv: c0 00 00 00 18  - 0.24A?
 
 send: 8a 0n           - get current rpm
 recv: c0 00 00 01 c2  - 450rpm
@@ -186,6 +263,8 @@ recv: c0 00 00 01 c2  - 450rpm
 
 Note rpm readings change infrequently and are always rounded to a convenient
 value.
+
+TODO: Verify pwm is pwm freq
 
 #### Setting
 
