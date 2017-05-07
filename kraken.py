@@ -1,16 +1,14 @@
 import array
 import colorsys
 import logging
-import subprocess
-import threading
 import time
+
 import usb.core
-import usb.util
-
+import threading
 import openhwmon
+import subprocess
 
-USB_VENDOR_NZXT = 0x1e71
-USB_PRODUCT_X62 = 0x170e
+from nzxt_device import NZXTDevice, NZXTCrashException
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +35,6 @@ def interpolate(t1, t2):
     "Return a tuple half way between 2 given ones"
     return tuple(int(sum(x)/2) for x in zip(t1, t2))
 
-class KrakenCrashException(Exception): pass
-
 
 class KrakenManager(object):
     devices = {}
@@ -47,7 +43,7 @@ class KrakenManager(object):
         #self.reset(1)
         try:
             self.__my_init()
-        except KrakenCrashException as e:
+        except NZXTCrashException as e:
             serial = e.args[0]
             logging.error("Crashed trying to init {}".format(serial))
             self.reset(serial)
@@ -67,8 +63,8 @@ class KrakenManager(object):
 
     def __my_init(self):
         "Fires up the Kraken!"
-        found = usb.core.find(idVendor=USB_VENDOR_NZXT,
-                              idProduct=USB_PRODUCT_X62,
+        found = usb.core.find(idVendor= 0x1e71,
+                              idProduct=0x170e,
                               find_all=True)
         for i in found:
             logging.info("Mgr found device {}".format(i.serial_number))
@@ -78,7 +74,7 @@ class KrakenManager(object):
         "Drop the device, reset the hardware, and re-add"
         del(self.devices[serial])
         self.reset(serial)
-        dev = usb.core.find(idVendor=USB_VENDOR_NZXT, serial_number=serial)
+        dev = usb.core.find(idVendor=0x1e71, serial_number=serial)
         try:
             self.devices[serial] = Kraken(dev)
         except Exception:
@@ -123,8 +119,8 @@ class KrakenManager(object):
                 return self.devices[id].whoosh()
 
             for i in self.devices.values():
-                i.whoosh2()
-        except KrakenCrashException:
+                i.whoosh()
+        except NZXTCrashException:
             logging.error("Crash")
             return None
 
@@ -159,68 +155,25 @@ class KrakenManager(object):
                 i.ring_setcol(tuple(round(i*255) for i in col))
 
 
-class Kraken(object):
+class Kraken(NZXTDevice):
     def __init__(self, dev):
-        self.crashed = threading.Event()
-        self._reader_die = threading.Event()
         self._temp = None
         self._fan = None
         self._fanrpm = None
         self._pump = None
         self._pumprpm = None
         self._status = None
-        self._dev = dev
-        self.txcount = 0
-        self.txbytes = 0
-        self.serial_number = dev.serial_number
 
-        logging.debug("Using USB device. {}".format(dev.__repr__()))
-        # Only one configuration on this thing
-        dev.set_configuration()
-        cfg = dev.get_active_configuration()
-        intf = cfg[(0,0)]
-
-        self._rx = usb.util.find_descriptor(intf,
-            custom_match = lambda e: \
-            usb.util.endpoint_direction(e.bEndpointAddress) == \
-            usb.util.ENDPOINT_IN)
-        assert self._rx is not None
-        logging.debug("RX endpoint {}".format(self._rx.__repr__()))
-
-        self._tx = usb.util.find_descriptor(intf,
-            custom_match = lambda e: \
-            usb.util.endpoint_direction(e.bEndpointAddress) == \
-            usb.util.ENDPOINT_OUT)
-        assert self._tx is not None
-        logging.debug("TX endpoint {}".format(self._tx.__repr__()))
+        NZXTDevice.__init__(self, dev)
 
         self.pump = 60
         self.fan = 30
 
-        self._reader = threading.Thread(target=self.readerThread)
-        self._reader.name = "reader"
-        self._reader.daemon = True
-        self._reader.start()
-
-    def exit(self):
-        logging.info("Stopping")
-        try:
-            self._reader_die.set()
-            self._reader.join()
-        except AttributeError:
-            pass
-
-    def readerThread(self, freq=20.0):
-        "Read from device in background, freq is in Hz"
-        logging.info("Starting reader thread")
-        while not self._reader_die.is_set():
-            rv = self.read()
-            if rv is not None:
-                if sum(rv[-8:]) == 0:
-                    self.parse_1_57(rv)
-                else:
-                    self.parse_status(rv)
-            time.sleep(1.0/freq)
+    def handle_read(self, data):
+        if sum(data[-8:]) == 0:
+            self.parse_1_57(data)
+        else:
+            self.parse_status(data)
 
     @property
     def status(self):
@@ -275,11 +228,11 @@ class Kraken(object):
         if p == expected:
             logging.debug("Normal [0x01, 0x57] response received")
         else:
-            logging.debug("exp: " + [hex(i) for i in expected])
-            logging.debug("got: " + [hex(i) for i in p])
+            logging.info("exp: " + [hex(i) for i in expected])
+            logging.info("got: " + [hex(i) for i in p])
 
     def parse_status(self, p):
-        "Parse 4hz status line"
+        "Parse status line"
         if p[0]  != 0x04: print("*** p[{}] == {}".format(0,p[0]))
         self._temp = p[1] + 4 + (p[2] / 10.0)
         self._fanrpm = p[3] * 256 + p[4]
@@ -303,51 +256,8 @@ class Kraken(object):
             st = "?"
         if p[16] != 0x00: print("*** p[{}] == {}".format(16,p[16]))
 
-        #logging.debug("Temp: {}, Fan: {} rpm, Pump: {} rpm, State: {}"\
-        #     .format(self.temp, self.fanrpm, self.pumprpm, self.status))
-
-    def read(self):
-        "Read one packet from buffer, or None if nothing to read"
-        bufsize = 17
-        try:
-            return self._rx.read(bufsize, timeout=1)
-        except usb.core.USBError:
-            return None
-        except OSError as e:
-            logging.exception(e)
-            return None
-
-    def write(self, data):
-        """
-        Write one packet to device, padded if necessary
-        It seems everything needs padding to 65 bytes apart from 2-byte
-        commands
-        """
-        if len(data) == 2:
-            self.__do_write(data)
-        else:
-            self.__do_write(data + [0x00] * (65-len(data)))
-
-    def __do_write(self, data, retries = 5):
-        #logging.debug("TX: {}".format([hex(i) for i in data]))
-        for i in range(retries):
-            try:
-                bytes = self._tx.write(data, timeout=100)
-                self.txcount += 1
-                self.txbytes += bytes
-                return bytes
-            except IOError as e:
-                #logging.exception(e)
-                logging.debug("retrying")
-        self.__panic()
-
-    def __panic(self):
-        usb.util.dispose_resources(self._dev)
-        self.crashed.set()
-        logging.info("crashed after {} writes totalling {} bytes"\
-                     .format(self.txcount, self.txbytes))
-        self.exit()
-        raise KrakenCrashException(self.serial_number)
+        logging.debug("Temp: {}, Fan: {} rpm, Pump: {} rpm, State: {}"\
+            .format(self.temp, self.fanrpm, self.pumprpm, self.status))
 
     def ring_setcol(self, rgb):
         "Set the ring a static colour"
@@ -365,18 +275,50 @@ class Kraken(object):
                 self.fan = i
 
     def whoosh(self):
+        self.write([1,0x57])
         i = interpolate
         order = [RED, BLACK, GREEN, BLACK, BLUE, BLACK, WHITE, BLACK]
         #order = [RED, i(RED,GREEN), GREEN, i(GREEN,BLUE), BLUE,
         #         i(BLUE,WHITE), WHITE, i(WHITE,RED)]
 
-        header = [0x02, 0x4c, 0x02, 0x00, 0x02]
+        logo = [0x14, 0xb0, 0x58]
+        #ring = [0xb0, 0x14, 0x58] * 8
+        ring = flatten(order)
+        lights = { 'both':0, 'logo':1, 'ring':2 }
+        effect = {
+            'fixed': 0,
+            'ring fading': 1,
+            'spectrum wave': 2,
+            'ring marquee': 3,
+            'ring covering marquee': 4,
+            'ring alternating wave': 5, # lights can be 0x0a for 'rotating'
+            'breathing': 6,
+            'pulse': 7,
+            'tai chi': 8, # ??? crash?
+            'ring water cooler': 9,
+            'ring loading': 10
+        }
+        #l=0x00 # lights['logo']
+        #e=2 # effect
+        #d=[2,0x4c,l,e,0x02]
+        #self.write(d + logo + ring)
+        #d=[2,0x4c,l,e,0x22]
+        #self.write(d + [255,0,0] + flatten(rotate(order,2)))
+        ##d=[2,0x4c,l,e,0x42]
+        ##self.write(d + [0,0,255] + flatten(rotate(order,4)))
+        #self.write([1,0x57])
+
+        #time.sleep(10);import sys;sys.exit(1)
+        self.write([0xc0, 0xc0])
+        time.sleep(3)
+        header = [0x02, 0x4c, lights['both'], 0x00, 0x00]
         while True:
             for i in range(8):
                 p = flatten(rotate(order, i))
-                data = header + list(BLUE) + p
+                #data = header + list(BLUE) + p
+                data = header + list(order[i%4 * 2]) + p
                 self.write(data)
-                time.sleep(0.5)
+                time.sleep(5)
 
 
 # When it's crashed, resetting doesn't work - need to reset parent hub
@@ -394,12 +336,11 @@ if __name__ == "__main__":
         a = KrakenManager()
         a.status()
     #time.sleep(0.5)
-    #a.write([1,0x57])
     #a.pump = 60
     #a.fan = 30
         #a.run()
-        while True:
-            a.whoosh()
+        #while True:
+        a.whoosh()
         time.sleep(3)
         a.exit()
     except KeyboardInterrupt:
