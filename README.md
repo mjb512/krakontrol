@@ -1,6 +1,13 @@
 # krakontrol
 Alternative control software for NZXT's Kraken AIO cooler
 
+# WARNING!
+
+This software is incomplete, unsupported and MAY BRICK YOUR HARDWARE!
+Also, it doesn't actually do much in its current state.
+
+For now it should be used as reading material only!
+
 # Requirements
 LibUSB
 python
