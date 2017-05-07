@@ -219,9 +219,9 @@ The grid+ v2 really is a pile of crap. It can't keep some fans running below
 around 60% without constantly spinning them up and down. It also appears
 there is no way to set speeds under what it thinks is 450rpm!
 
-Hardware-wise, I haven't opened mine yet, but from images found on the net,
-it's an MCP2200 in front of a pair of STM8S5K6 MCUs. Why a pair of CPUs?
-Each has 3 timers which are obviously used for PWM.
+Hardware-wise, it's an MCP2200 in front of a pair of STM8S005K6T6C MCUs in
+LFQP32w packages. Why a pair of CPUs? It's hard to tell due to the thick
+solder mask. As far as I can see, only one has serial comms with the MCP.
 
 It is entirely possible that the Grid+ v2 can be turned into something decent
 with some replacement firmware. How practical this is will depend on a sniff
